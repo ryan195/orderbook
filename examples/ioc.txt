@@ -1,0 +1,11 @@
+# Partial IOC fill: buy 10, fill 5, discard 5; ask 103 stays.
+sell 101 3
+sell 102 2
+sell 103 4
+buy 102 10 ioc
+book
+# No crossing liquidity: discard all 2.
+buy 100 2 ioc
+# Ordinary limit order rests and can be cancelled.
+buy 99 3
+cancel 6

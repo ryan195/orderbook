@@ -1,0 +1,12 @@
+stock AAPL
+sell 100 5
+stock MSFT
+buy 100 5
+# The AAPL sell and MSFT buy do not match.
+stock AAPL
+book
+buy 100 2
+stock MSFT
+book
+cancel 1
+stocks

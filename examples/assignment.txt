@@ -1,0 +1,7 @@
+# The assignment scenario; start with an empty book.
+sell 101 5
+sell 101 3
+sell 102 2
+sell 103 4
+buy 102 12
+book 5
