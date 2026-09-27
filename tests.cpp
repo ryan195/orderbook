@@ -169,54 +169,10 @@ void validation_and_ids() {
     CHECK(s.asks.size() == 1 && s.asks[0].quantity == 1);
 }
 
-void immediate_or_cancel(Side side) {
-    const Side opposite = side == Side::Buy ? Side::Sell : Side::Buy;
-    for (int available : {0, 3, 5, 8}) {
-        OrderBook b;
-        std::uint64_t resting_id = 0;
-        if (available) resting_id = b.add_order(opposite, 100, available).order_id;
-        auto r = b.add_order(side, 100, 5, TimeInForce::ImmediateOrCancel);
-        CHECK(!b.cancel_order(r.order_id));
-        CHECK(r.trades.size() == (available ? 1u : 0u));
-        if (available) check_trade(r.trades[0], side == Side::Buy ? r.order_id : resting_id,
-                                  side == Side::Sell ? r.order_id : resting_id,
-                                  100, available < 5 ? available : 5);
-        auto s = b.snapshot(10);
-        const auto& own = side == Side::Buy ? s.bids : s.asks;
-        const auto& other = side == Side::Buy ? s.asks : s.bids;
-        CHECK(own.empty());
-        CHECK(other.size() == (available > 5 ? 1u : 0u));
-        if (available > 5) CHECK(other[0].quantity == 3);
-    }
-    OrderBook b;
-    auto first = b.add_order(opposite, 100, 2);
-    auto second = b.add_order(opposite, 100, 1);
-    const auto next_price = side == Side::Buy ? 101 : 99;
-    auto third = b.add_order(opposite, next_price, 2);
-    auto beyond = b.add_order(opposite, side == Side::Buy ? 102 : 98, 4);
-    auto r = b.add_order(side, next_price, 10, TimeInForce::ImmediateOrCancel);
-    CHECK(r.trades.size() == 3);
-    const std::uint64_t ids[] = {first.order_id, second.order_id, third.order_id};
-    for (std::size_t i = 0; i < 3; ++i)
-        check_trade(r.trades[i], side == Side::Buy ? r.order_id : ids[i],
-                    side == Side::Sell ? r.order_id : ids[i], i == 2 ? next_price : 100,
-                    i == 1 ? 1 : 2);
-    CHECK(!b.cancel_order(r.order_id));
-    auto blocked = b.add_order(side, 100, 1, TimeInForce::ImmediateOrCancel);
-    CHECK(blocked.trades.empty());
-    CHECK(!b.cancel_order(blocked.order_id));
-    CHECK(b.cancel_order(beyond.order_id));
-    CHECK(b.snapshot(10).bids.empty() && b.snapshot(10).asks.empty());
-}
-
 void invalid_enums() {
     OrderBook b;
     bool rejected = false;
     try { b.add_order(static_cast<Side>(99), 100, 1); }
-    catch (const std::invalid_argument&) { rejected = true; }
-    CHECK(rejected);
-    rejected = false;
-    try { b.add_order(Side::Buy, 100, 1, static_cast<TimeInForce>(99)); }
     catch (const std::invalid_argument&) { rejected = true; }
     CHECK(rejected);
     CHECK(b.add_order(Side::Buy, 100, 1).order_id == 1);
@@ -256,9 +212,6 @@ void price_level_limits() {
         CHECK(rejected);
         auto depth = book.snapshot(1);
         CHECK((side == Side::Buy ? depth.bids[0].quantity : depth.asks[0].quantity) == 12);
-        // An IOC order never rests, so the full same-side level must not reject it.
-        auto ioc = book.add_order(side, 100, 10, TimeInForce::ImmediateOrCancel);
-        CHECK(ioc.order_id == 3 && ioc.trades.empty());
         const auto opposite = side == Side::Buy ? Side::Sell : Side::Buy;
         book.add_order(opposite, 100, 3);
         depth = book.snapshot(1);
@@ -302,7 +255,7 @@ void quantity_limits() {
     OrderBook small(10);
     CHECK(small.add_order(Side::Sell, 100, 10).order_id == 1);
     rejected = false;
-    try { small.add_order(Side::Buy, 100, 11, TimeInForce::ImmediateOrCancel); }
+    try { small.add_order(Side::Buy, 100, 11); }
     catch (const std::invalid_argument&) { rejected = true; }
     CHECK(rejected);
     CHECK(small.snapshot(1).asks[0].quantity == 10);
@@ -327,9 +280,10 @@ void multiple_stocks() {
     CHECK(exchange.snapshot("AAPL", 1).asks[0].quantity == 5);
     CHECK(exchange.cancel_order("MSFT", buy.order_id));
     CHECK(exchange.snapshot("AAPL", 1).asks[0].quantity == 5);
-    auto fill = exchange.add_order("AAPL", Side::Buy, 100, 7, TimeInForce::ImmediateOrCancel);
+    auto fill = exchange.add_order("AAPL", Side::Buy, 100, 7);
     CHECK(fill.trades.size() == 1 && fill.trades[0].quantity == 5);
-    CHECK(!exchange.cancel_order("AAPL", fill.order_id));
+    CHECK(exchange.snapshot("AAPL", 1).bids[0].quantity == 2);
+    CHECK(exchange.cancel_order("AAPL", fill.order_id));
     CHECK(exchange.snapshot("AAPL", 1).asks.empty());
     CHECK(exchange.symbols() == std::vector<std::string>({"AAPL", "MSFT"}));
 }
@@ -370,8 +324,6 @@ int main() {
         {"configurable quantity limits", quantity_limits},
         {"price-level caps and cached totals", price_level_limits},
         {"64-bit quantity boundaries and overflow detection", quantity_boundaries},
-        {"buy IOC", [] { immediate_or_cancel(Side::Buy); }},
-        {"sell IOC", [] { immediate_or_cancel(Side::Sell); }},
         {"invalid enum values", invalid_enums},
         {"assignment example", assignment_example},
         {"buy price priority and remainder", [] { price_priority(Side::Sell); }},

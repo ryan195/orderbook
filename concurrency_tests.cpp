@@ -14,7 +14,7 @@ void require(bool condition, const char* message) {
 }
 
 // A small server worker pool handles requests from 1,000 logical players.
-// Each player submits 20 IOC buys, but only 1,000 units exist to trade.
+// Each player submits 20 limit buys, but only 1,000 units exist to trade.
 void competing_buyers() {
     OrderBook book;
     const auto supply = book.add_order(Side::Sell, 100, 1000);
@@ -30,14 +30,16 @@ void competing_buyers() {
         threads.emplace_back([&, worker] {
             while (!start.load()) std::this_thread::yield();
             for (unsigned i = 0; i < requests_per_worker; ++i)
-                results[worker].push_back(book.add_order(Side::Buy, 100, 1, TimeInForce::ImmediateOrCancel));
+                results[worker].push_back(book.add_order(Side::Buy, 100, 1));
         });
     }
     std::thread reader([&] {
         while (!start.load()) std::this_thread::yield();
         while (!done.load()) {
             auto s = book.snapshot(1);
-            if (!s.bids.empty() || s.best_bid || s.asks.size() > 1 ||
+            if (s.bids.size() > 1 || s.asks.size() > 1 ||
+                (!s.bids.empty() && !s.asks.empty()) ||
+                (!s.bids.empty() && (s.bids[0].quantity <= 0 || s.bids[0].quantity > 19000)) ||
                 (!s.asks.empty() && (s.asks[0].quantity <= 0 || s.asks[0].quantity > 1000)))
                 bad_snapshot = true;
             std::this_thread::yield();
@@ -63,8 +65,9 @@ void competing_buyers() {
     require(executed == 1000, "competing buyers overfilled or underfilled available liquidity");
     require(!bad_snapshot, "inconsistent concurrent snapshot");
     auto final = book.snapshot(1);
-    require(final.bids.empty() && final.asks.empty() && !final.best_bid && !final.best_ask, "book not empty");
-    std::cout << "PASS: 20,000 competing IOC requests, exactly 1,000 units filled ("
+    require(final.asks.empty() && !final.best_ask && final.bids.size() == 1
+            && final.best_bid == 100 && final.bids[0].quantity == 19000, "unfilled buys did not rest");
+    std::cout << "PASS: 20,000 competing limit orders, exactly 1,000 units filled ("
               << elapsed << " ms locally, including concurrent snapshots)\n";
 }
 
@@ -84,7 +87,7 @@ void cancellation_vs_matching() {
         threads.emplace_back([&, worker] {
             while (!start.load()) std::this_thread::yield();
             for (unsigned i = 0; i < 250; ++i) {
-                auto result = book.add_order(Side::Buy, 100, 1, TimeInForce::ImmediateOrCancel);
+                auto result = book.add_order(Side::Buy, 100, 1);
                 trades[worker].insert(trades[worker].end(), result.trades.begin(), result.trades.end());
             }
         });
@@ -98,7 +101,9 @@ void cancellation_vs_matching() {
     }
     require(filled_ids.size() + cancelled.load() == 1000, "same liquidity cancelled and traded, or lost");
     auto s = book.snapshot(10);
-    require(s.bids.empty() && s.asks.empty(), "liquidity left after concurrent drain");
+    require(s.asks.empty(), "sell liquidity left after concurrent drain");
+    const auto resting_buys = s.bids.empty() ? 0 : s.bids[0].quantity;
+    require(resting_buys == cancelled.load(), "unfilled buys did not conserve quantity");
     std::cout << "PASS: cancellation races with matching without double-consuming liquidity\n";
 }
 

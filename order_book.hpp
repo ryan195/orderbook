@@ -16,11 +16,6 @@ enum class Side {
     Sell
 };
 
-enum class TimeInForce {
-    GoodTillCancelled,
-    ImmediateOrCancel
-};
-
 struct Order {
     std::uint64_t id;
     Side side;
@@ -70,8 +65,7 @@ public:
     OrderResult add_order(
         Side side,
         std::int64_t price,
-        std::int64_t quantity,
-        TimeInForce time_in_force = TimeInForce::GoodTillCancelled
+        std::int64_t quantity
     );
 
     // Cancel an order that is still resting in the book.

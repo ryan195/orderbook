@@ -14,7 +14,7 @@ public:
     std::vector<Order> orders;
     std::uint64_t next_id = 1;
 
-    OrderResult add(Side side, std::int64_t price, std::int64_t quantity, TimeInForce policy) {
+    OrderResult add(Side side, std::int64_t price, std::int64_t quantity) {
         Order incoming{next_id++, side, price, quantity};
         OrderResult result{incoming.id, {}};
         while (incoming.quantity > 0) {
@@ -34,7 +34,7 @@ public:
             best->quantity -= quantity_traded;
             if (!best->quantity) orders.erase(best);
         }
-        if (incoming.quantity && policy == TimeInForce::GoodTillCancelled) orders.push_back(incoming);
+        if (incoming.quantity > 0) orders.push_back(incoming);
         return result;
     }
 
@@ -85,9 +85,9 @@ void compare(const BookSnapshot& a, const BookSnapshot& b) {
 
 // Each profile stresses a different shape of book, rather than only increasing
 // the number of samples drawn from one small distribution.
-enum class Profile { Balanced, Crowded, Wide, Extremes, BuyHeavy, SellHeavy, CancelHeavy, IocHeavy };
+enum class Profile { Balanced, Crowded, Wide, Extremes, BuyHeavy, SellHeavy, CancelHeavy };
 const char* names[] = {"balanced", "crowded", "wide", "extremes", "buy-heavy",
-                       "sell-heavy", "cancel-heavy", "ioc-heavy"};
+                       "sell-heavy", "cancel-heavy"};
 constexpr auto max_quantity = std::numeric_limits<std::int64_t>::max();
 constexpr auto full_depth = std::numeric_limits<std::size_t>::max();
 
@@ -113,13 +113,12 @@ void reject_invalid(OrderBook& actual, const ReferenceBook& reference, std::mt19
     const auto side = rng() % 2 ? Side::Buy : Side::Sell;
     bool rejected = false;
     try {
-        switch (rng() % 6) {
+        switch (rng() % 5) {
         case 0: actual.add_order(side, 0, 1); break;
         case 1: actual.add_order(side, 1, 0); break;
         case 2: actual.add_order(side, std::numeric_limits<std::int64_t>::min(), 1); break;
         case 3: actual.add_order(side, 1, -1); break;
         case 4: actual.add_order(static_cast<Side>(77), 1, 1); break;
-        case 5: actual.add_order(side, 1, 1, static_cast<TimeInForce>(77)); break;
         }
     } catch (const std::invalid_argument&) { rejected = true; }
     require(rejected, "invalid input accepted");
@@ -130,7 +129,6 @@ struct GeneratedOrder {
     Side side;
     std::int64_t price;
     std::int64_t quantity;
-    TimeInForce policy;
 };
 
 GeneratedOrder generate_order(Profile profile, unsigned seed, unsigned step,
@@ -141,7 +139,6 @@ GeneratedOrder generate_order(Profile profile, unsigned seed, unsigned step,
     if (loading) side = seed % 2 ? Side::Buy : Side::Sell;
     std::int64_t price = 90 + rng() % 21;
     std::int64_t quantity = 1 + rng() % 30;
-    auto policy = rng() % 4 == 0 ? TimeInForce::ImmediateOrCancel : TimeInForce::GoodTillCancelled;
     if (profile == Profile::Crowded || profile == Profile::CancelHeavy) price = 100;
     if (profile == Profile::Wide) price = loading ? 1 + step * 1000 : 1 + rng() % 300001;
     if (profile == Profile::Extremes) {
@@ -153,10 +150,7 @@ GeneratedOrder generate_order(Profile profile, unsigned seed, unsigned step,
         price = prices[rng() % 5];
         quantity = quantities[rng() % 5];
     }
-    if (profile == Profile::IocHeavy)
-        policy = rng() % 10 ? TimeInForce::ImmediateOrCancel : TimeInForce::GoodTillCancelled;
-    if (loading) policy = TimeInForce::GoodTillCancelled;
-    return {side, price, quantity, policy};
+    return {side, price, quantity};
 }
 
 int main() {
@@ -166,7 +160,7 @@ int main() {
     bool saw_large_total = false;
     bool saw_many_levels = false;
     bool saw_crowded_level = false;
-    for (unsigned profile_index = 0; profile_index < 8; ++profile_index) {
+    for (unsigned profile_index = 0; profile_index < 7; ++profile_index) {
         const auto profile = static_cast<Profile>(profile_index);
         for (unsigned seed = 1; seed <= seeds; ++seed) {
             std::mt19937 rng(seed);
@@ -206,13 +200,12 @@ int main() {
                                 "cancellation quantity conservation failed");
                         require(!actual.cancel_order(id), "repeated cancellation accepted");
                     } else {
-                        const auto [side, price, quantity, policy] =
+                        const auto [side, price, quantity] =
                             generate_order(profile, seed, step, loading, rng);
                         operation = std::string(side == Side::Buy ? "buy " : "sell ") + std::to_string(price)
-                            + " " + std::to_string(quantity)
-                            + (policy == TimeInForce::ImmediateOrCancel ? " ioc" : "");
-                        auto a = actual.add_order(side, price, quantity, policy);
-                        auto b = reference.add(side, price, quantity, policy);
+                            + " " + std::to_string(quantity);
+                        auto a = actual.add_order(side, price, quantity);
+                        auto b = reference.add(side, price, quantity);
                         require(a.order_id == b.order_id, "ID differs (possibly consumed by invalid input)");
                         require(a.trades.size() == b.trades.size(), "trade count differs");
                         std::int64_t filled = 0;
@@ -225,13 +218,9 @@ int main() {
                             filled += x.quantity;
                         }
                         require(filled <= quantity, "incoming order overfilled");
-                        auto discarded = policy == TimeInForce::ImmediateOrCancel
-                            ? quantity - filled : 0;
                         require(resting_quantity(before) + quantity ==
-                                resting_quantity(actual.snapshot(full_depth)) + 2 * filled + discarded,
+                                resting_quantity(actual.snapshot(full_depth)) + 2 * filled,
                                 "add quantity conservation failed");
-                        if (policy == TimeInForce::ImmediateOrCancel)
-                            require(!actual.cancel_order(a.order_id), "IOC remainder rested");
                     }
                     auto full = actual.snapshot(full_depth);
                     compare(full, reference.snapshot(full_depth));
@@ -270,6 +259,6 @@ int main() {
         std::cerr << "FAIL: missing required coverage of large totals, deep books or crowded levels\n";
         return 1;
     }
-    std::cout << "PASS: " << operations << " randomized operations across 8 profiles and " << seeds
+    std::cout << "PASS: " << operations << " randomized operations across 7 profiles and " << seeds
               << " seeds per profile; boundary coverage and conservation checks passed\n";
 }

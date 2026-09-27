@@ -48,9 +48,8 @@ public:
     }
 
     OrderResult add_order(const std::string& symbol, Side side, std::int64_t price,
-                          std::int64_t quantity,
-                          TimeInForce policy = TimeInForce::GoodTillCancelled) {
-        return find_book(symbol).add_order(side, price, quantity, policy);
+                          std::int64_t quantity) {
+        return find_book(symbol).add_order(side, price, quantity);
     }
 
     bool cancel_order(const std::string& symbol, std::uint64_t order_id) {

@@ -20,18 +20,12 @@ OrderBook::OrderBook(std::int64_t max_order_quantity, std::int64_t max_level_qua
 OrderResult OrderBook::add_order(
     Side side,
     std::int64_t price,
-    std::int64_t quantity,
-    TimeInForce time_in_force
+    std::int64_t quantity
 ) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (side != Side::Buy && side != Side::Sell) {
         throw std::invalid_argument("Invalid side");
     }
-    if (time_in_force != TimeInForce::GoodTillCancelled &&
-        time_in_force != TimeInForce::ImmediateOrCancel) {
-        throw std::invalid_argument("Invalid time in force");
-    }
-
     if (price <= 0) {
         throw std::invalid_argument("Price must be positive");
     }
@@ -44,21 +38,19 @@ OrderResult OrderBook::add_order(
         throw std::invalid_argument("Quantity exceeds configured per-order limit");
     }
 
-    if (time_in_force == TimeInForce::GoodTillCancelled) {
-        const auto check_capacity = [&](const auto& same_side) {
-            const auto level = same_side.find(price);
-            if (level != same_side.end() && quantity > max_level_quantity_ - level->second.quantity) {
-                throw std::invalid_argument("Order would exceed the price-level quantity cap");
-            }
-        };
-        // An existing same-side level cannot cross the opposite book, so an
-        // order at this exact price would rest in full. At a new level, the
-        // per-order cap already guarantees that any remainder fits.
-        if (side == Side::Buy) {
-            check_capacity(bids_);
-        } else {
-            check_capacity(asks_);
+    const auto check_capacity = [&](const auto& same_side) {
+        const auto level = same_side.find(price);
+        if (level != same_side.end() && quantity > max_level_quantity_ - level->second.quantity) {
+            throw std::invalid_argument("Order would exceed the price-level quantity cap");
         }
+    };
+    // An existing same-side level cannot cross the opposite book, so an
+    // order at this exact price would rest in full. At a new level, the
+    // per-order cap already guarantees that any remainder fits.
+    if (side == Side::Buy) {
+        check_capacity(bids_);
+    } else {
+        check_capacity(asks_);
     }
 
     // Unsigned increment wraps to zero after the final valid ID. Never reuse it.
@@ -81,8 +73,8 @@ OrderResult OrderBook::add_order(
         match_orders(incoming, bids_, trades);
     }
 
-    // IOC discards any remainder; ordinary limit orders rest.
-    if (incoming.quantity > 0 && time_in_force == TimeInForce::GoodTillCancelled) {
+    // Every unfilled remainder rests until matched or cancelled.
+    if (incoming.quantity > 0) {
         rest_order(incoming);
     }
 

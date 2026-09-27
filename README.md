@@ -33,7 +33,7 @@ c++ -std=c++17 -pthread -Wall -Wextra -Wpedantic tests.cpp order_book.cpp -o bui
 ./build/tests
 ```
 
-The runner prints a result for each of eighteen test groups and exits with a nonzero
+The runner prints a result for each of sixteen test groups and exits with a nonzero
 status if any check fails. Checks stay active even with `-DNDEBUG`. No test framework
 installation is needed.
 
@@ -82,7 +82,7 @@ Compile your caller together with `order_book.cpp` and include `order_book.hpp`.
 
 | Operation | Result |
 | --- | --- |
-| `add_order(side, price, quantity)` | An `OrderResult` containing the new ID and all trades in execution order. By default any remainder rests; IOC discards it. |
+| `add_order(side, price, quantity)` | An `OrderResult` containing the new ID and all trades in execution order. Any unfilled remainder rests until fully matched or explicitly cancelled. |
 | `cancel_order(id)` | `true` if a resting order was removed, otherwise `false`. |
 | `snapshot(N)` | Up to N aggregated price levels per side, best bids first and best asks first, plus optional best bid/ask prices. |
 
@@ -105,12 +105,10 @@ Every trade includes buy ID, sell ID, resting price and executed quantity.
 - **Priority:** lowest ask/highest bid first; within a level, serialized processing order
   determines FIFO priority. Concurrent requests are ordered by mutex acquisition,
   not by network arrival time. Partial fills keep the original queue position.
-- **Execution:** trades always execute at the resting order's price. Equal prices
-  cross. Limit orders default to `TimeInForce::GoodTillCancelled`; passing
-  `TimeInForce::ImmediateOrCancel` matches immediately and discards the unfilled
-  remainder. An IOC order still receives an ID, but is never available to cancel.
-  Its discarded quantity is the submitted quantity minus the sum of its trades.
-  Invalid side or time-in-force enum values throw `std::invalid_argument`.
+- **Execution:** all orders are limit orders. They match immediately when prices
+  cross, at the resting order's price. Any unfilled quantity always stays in the
+  book until fully matched or explicitly cancelled. There is no expiry or
+  configurable time-in-force policy. Invalid side values throw `std::invalid_argument`.
 - **Cancellation:** removes the entire remaining quantity. Unknown, fully filled,
   and already cancelled IDs all return `false`.
 - **Snapshots:** owned copies, with quantities summed across orders at each level.
@@ -171,7 +169,7 @@ holds one book-wide lock. No output or network operations run under that lock.
 ## Limitations and extras
 
 The project implements the required core plus an interactive command-line demo,
-file replay, multiple stocks, immediate-or-cancel limit orders, and randomized reference testing.
+file replay, multiple stocks, and randomized reference testing.
 
 Individual quantities and price-level totals use standard `int64_t`. The default
 per-order cap is 1,000,000 and the default per-level cap is `INT64_MAX`. Configure
@@ -183,12 +181,11 @@ Before assigning an ID or matching, an ordinary limit order that would overfill
 an existing same-side level is rejected with `std::invalid_argument`, using the
 safe check `quantity > cap - current_total`. An existing same-side level cannot
 cross the opposite book, so such an order would rest in full. For new levels, the
-per-order cap guarantees the remainder fits. IOC never rests and is exempt from
-the level-cap check, but still respects the per-order cap. Fills and cancellations
+per-order cap guarantees the remainder fits. Fills and cancellations
 restore level capacity. Snapshots therefore cannot overflow from accepted totals.
 
 Tests cover exact-cap acceptance, rejection without state/ID changes, restored
-capacity, IOC, independent stock caps, concurrent admission, and `INT64_MAX`.
+capacity, independent stock caps, concurrent admission, and `INT64_MAX`.
 The randomized suite compares cached totals with sums from its reference model.
 Per-player balances, ownership, request rates and open-order limits belong in the
 game/server layer. Boundary stress tests explicitly raise the per-order cap.
@@ -228,25 +225,23 @@ sell 101 5
 buy 102 2
 book 5
 cancel 1
-buy 102 10 ioc
+buy 102 10
 quit
 ```
 
 Commands are lowercase. The demo starts in stock `DEMO`, preserving existing
 single-stock replay files. `stock AAPL` creates/selects a demo stock; `stocks` lists
 registered symbols. Buy, sell, cancel and book commands apply to the selected stock.
-Stock symbols are uppercase and case-sensitive. `buy PRICE QUANTITY [ioc]` and
-`sell PRICE QUANTITY [ioc]` accept positive integer cents and whole quantities.
-The optional `ioc` flag selects immediate-or-cancel; omitting it preserves ordinary
-resting limit-order behavior. After each add/cancel, the demo displays trades (if
-any), best prices and up to five levels. IOC also prints the discarded quantity.
+Stock symbols are uppercase and case-sensitive. `buy PRICE QUANTITY` and
+`sell PRICE QUANTITY` accept positive integer cents and whole quantities.
+Every unfilled remainder stays in the book. After each add/cancel, the demo
+shows trades (if any), best prices and up to five levels.
 `book [N]` selects a depth (default five); `help` lists commands.
 
 Save these same commands in a text file to replay them against a fresh empty book:
 
 ```sh
 ./build/orderbook-cli examples/assignment.txt
-./build/orderbook-cli examples/ioc.txt
 ```
 
 Replay prints each command before executing it. Blank lines and `#` comments are
@@ -256,22 +251,6 @@ resting ID on cancellation is a valid operation, reported without stopping repla
 Replay files use the deterministic IDs assigned from 1 at the start of each run.
 They are scenarios, not persistent snapshots or automatic session recordings.
 
-## Immediate-or-cancel API
-
-```cpp
-auto result = book.add_order(Side::Buy, 10200, 10,
-                             TimeInForce::ImmediateOrCancel);
-```
-
-This buys up to ten units at prices no higher than 10200. Available liquidity is
-matched with the same price-time priority as ordinary limit orders. If only three
-units match, the other seven are discarded and never enter the book. The default
-three-argument API remains compatible with existing callers.
-
-The deterministic tests cover IOC on both sides with no liquidity, non-crossing
-liquidity, partial/full fills, excess liquidity, FIFO across multiple matches,
-price limits, and the absence of a cancellable remainder.
-
 ## Randomized reference testing
 
 ```sh
@@ -279,9 +258,9 @@ c++ -std=c++17 -pthread -Wall -Wextra -Wpedantic randomized_tests.cpp order_book
 ./build/randomized-tests
 ```
 
-The test runs 160,000 generated operations across eight workload profiles, each
+The test runs 140,000 generated operations across seven workload profiles, each
 with 20 fixed seeds: balanced, crowded single-price queues, wide books, extreme
-64-bit values, buy-heavy, sell-heavy, cancellation-heavy, and IOC-heavy. Loading
+64-bit values, buy-heavy, sell-heavy, and cancellation-heavy. Loading
 phases ensure crowded queues and more than 100 price levels actually occur.
 Coverage checks require totals exceeding `INT64_MAX / 1000`, at least 300 orders
 at one price, and more than 100 levels on a side. Extreme prices reach `INT64_MAX`;
@@ -291,7 +270,7 @@ additions that would exceed the level cap.
 
 After each operation it compares exact trades, IDs, cancellation results, full
 untruncated depth and selected snapshot depths against an independent reference.
-Additional checks verify quantity conservation (including IOC discards), execution
+Additional checks verify quantity conservation, execution
 limits, positive quantities, sorted levels, and an uncrossed book. Invalid prices,
 quantities and enum values must leave the book and ID sequence unchanged. Cancels
 target front, middle, back, random, and non-resting IDs; survivors are drained in
@@ -331,14 +310,15 @@ c++ -std=c++17 -pthread -O2 -Wall -Wextra -Wpedantic concurrency_tests.cpp order
 ./build/concurrency-tests
 ```
 
-The first test uses eight workers to submit 20,000 one-unit IOC requests (20 each
+The first test uses eight workers to submit 20,000 one-unit limit orders (20 each
 for 1,000 logical players), while another thread requests snapshots. Only 1,000
-units are available: it verifies exactly 1,000 execute, IDs remain unique, and
-snapshots remain consistent. The second test races cancellation against matching
-and checks that executed plus cancelled quantities equal the starting liquidity.
+units are available: it verifies exactly 1,000 execute, the remaining 19,000 rest,
+IDs remain unique, and snapshots remain consistent. The second test races cancellation against matching
+and checks that executed plus cancelled sell quantities equal the starting
+liquidity, while unmatched buy quantities remain in the book.
 Additional tests verify concurrent level-cap enforcement and multi-stock isolation.
 The printed elapsed time is a local smoke measurement, not server latency or a
-production benchmark; most buys in the first case encounter an empty book.
+production benchmark; most buys in the first case find no sellers and become resting orders.
 
 ## Multiple stocks
 
@@ -424,7 +404,7 @@ assignment's matching-engine requirements. The engine accepts valid orders
 without knowing whether a player has cash or shares. A playable server would add
 player IDs, order ownership checks, cash and share reservations, and settlement.
 For example, a buy of ten shares at a $100 limit would reserve $1,000 before order
-submission; fills debit their actual cost, and cancellation or IOC expiry releases
+submission; fills debit their actual cost, and cancellation releases
 unused reservations. Sell orders would reserve shares (unless the game explicitly
 supports short selling). Cancellation would require the owning player's authority.
 

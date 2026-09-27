@@ -49,29 +49,20 @@ void show(const Exchange& exchange, const std::string& symbol, std::size_t level
 void help() {
     std::cout << "Commands (prices in integer cents):\n"
               << "  stock SYMBOL   (create/select a demo stock)\n  stocks\n"
-              << "  buy PRICE QUANTITY [ioc]\n  sell PRICE QUANTITY [ioc]\n  cancel ID\n"
+              << "  buy PRICE QUANTITY\n  sell PRICE QUANTITY\n  cancel ID\n"
               << "  book [LEVELS]   (default: 5)\n  help\n  quit\n"
               << "Lines may contain # comments. Replay: ./build/orderbook-cli FILE\n";
 }
 
 void submit_order(Exchange& exchange, const std::string& symbol, const std::vector<std::string>& words) {
-    if (words.size() == 4 && words[3] != "ioc") {
-        throw std::invalid_argument("Optional order policy must be ioc");
-    }
-    const auto policy = words.size() == 4 ? TimeInForce::ImmediateOrCancel : TimeInForce::GoodTillCancelled;
     const auto side = words[0] == "buy" ? Side::Buy : Side::Sell;
     const auto price = parse_number<std::int64_t>(words[1]);
     const auto quantity = parse_number<std::int64_t>(words[2]);
-    const auto result = exchange.add_order(symbol, side, price, quantity, policy);
+    const auto result = exchange.add_order(symbol, side, price, quantity);
     std::cout << symbol << " accepted order #" << result.order_id << '\n';
-    std::int64_t filled = 0;
     for (const auto& trade : result.trades) {
         std::cout << symbol << " TRADE buy #" << trade.buy_order_id << " sell #" << trade.sell_order_id
                   << " @ " << trade.price << " qty " << trade.quantity << '\n';
-        filled += trade.quantity;
-    }
-    if (policy == TimeInForce::ImmediateOrCancel) {
-        std::cout << "IOC discarded quantity: " << quantity - filled << '\n';
     }
     show(exchange, symbol);
 }
@@ -79,7 +70,7 @@ void submit_order(Exchange& exchange, const std::string& symbol, const std::vect
 // Return false only for quit. Parsing errors leave the caller's loop in control.
 bool execute_command(Exchange& exchange, std::string& symbol, const std::vector<std::string>& words) {
     const auto& command = words.front();
-    if ((command == "buy" || command == "sell") && (words.size() == 3 || words.size() == 4)) {
+    if ((command == "buy" || command == "sell") && words.size() == 3) {
         submit_order(exchange, symbol, words);
     } else if (command == "cancel" && words.size() == 2) {
         const auto id = parse_number<std::uint64_t>(words[1]);
